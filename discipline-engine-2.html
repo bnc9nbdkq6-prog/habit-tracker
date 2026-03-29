@@ -1,0 +1,1483 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+  <title>Discipline Engine</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0f1117; font-family: 'Nunito', sans-serif; }
+    #root { display: flex; justify-content: center; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+
+// ─── XP MODEL ────────────────────────────────────────────────────────────────
+const XP_MAX = 10000;
+const LEVEL_THRESHOLDS = [
+  0, 300, 700, 1200, 1800, 2500, 3300, 4100, 5000, 5900,
+  6700, 7400, 8000, 8500, 8900, 9200, 9450, 9650, 9800, 9920, 10000
+];
+
+function xpToLevel(xp) {
+  for (let i = LEVEL_THRESHOLDS.length - 1; i >= 0; i--) {
+    if (xp >= LEVEL_THRESHOLDS[i]) return i;
+  }
+  return 0;
+}
+function xpGain(level) {
+  return Math.max(10, Math.round(220 / (1 + Math.log(level + 1) * 0.7)));
+}
+function xpLoss(level) {
+  const tier = Math.floor(level / 4);
+  return Math.round(40 * Math.pow(1.7, tier));
+}
+function toRoman(n) {
+  const vals = [1000,900,500,400,100,90,50,40,10,9,5,4,1];
+  const syms = ["M","CM","D","CD","C","XC","L","XL","X","IX","V","IV","I"];
+  let r = "";
+  for (let i = 0; i < vals.length; i++) while (n >= vals[i]) { r += syms[i]; n -= vals[i]; }
+  return r;
+}
+
+// ─── ENVIRONMENTS ─────────────────────────────────────────────────────────────
+const ENVIRONMENTS = [
+  {
+    level: 0, name: "Street", skyTop: "#b0bec5", skyBot: "#78909c",
+    groundColor: "#546e7a", groundDark: "#37474f",
+    sun: null, moon: true,
+    elements: ["lamppost", "trashcan"],
+    bgAccent: "#607d8b",
+  },
+  {
+    level: 5, name: "Small Room", skyTop: "#ffe0b2", skyBot: "#ffcc80",
+    groundColor: "#8d6e63", groundDark: "#6d4c41",
+    sun: "#ffb300", moon: false,
+    elements: ["window", "plant"],
+    bgAccent: "#ff8f00",
+  },
+  {
+    level: 10, name: "Apartment", skyTop: "#90caf9", skyBot: "#42a5f5",
+    groundColor: "#66bb6a", groundDark: "#388e3c",
+    sun: "#fdd835", moon: false,
+    elements: ["tree", "cloud"],
+    bgAccent: "#1e88e5",
+  },
+  {
+    level: 15, name: "House", skyTop: "#ce93d8", skyBot: "#ab47bc",
+    groundColor: "#4caf50", groundDark: "#2e7d32",
+    sun: "#ff8f00", moon: false,
+    elements: ["tree", "cloud", "bird"],
+    bgAccent: "#9c27b0",
+  },
+  {
+    level: 20, name: "Heaven", skyTop: "#fff9c4", skyBot: "#fff176",
+    groundColor: "#a5d6a7", groundDark: "#66bb6a",
+    sun: "#ffee58", moon: false,
+    elements: ["cloud", "cloud", "star"],
+    bgAccent: "#ffd600",
+  },
+];
+
+function getEnvironment(level) {
+  let env = ENVIRONMENTS[0];
+  for (const e of ENVIRONMENTS) { if (level >= e.level) env = e; }
+  return env;
+}
+
+// ─── CHIBI GAME CHARACTER AVATAR ─────────────────────────────────────────────
+// Style: thick outlines, chibi proportions (big head ~60% of height),
+// flat colors with subtle shadow shapes, expressive face, stage-based outfits
+function AvatarSVG({ level, kneeling = false }) {
+  const isGod    = level >= 20;
+  const isElite  = level >= 15;
+  const isStrong = level >= 10;
+  const isRising = level >= 5;
+  const stage = Math.min(Math.floor(level / 5), 4);
+
+  // Body builds per stage — skinny to muscular
+  const bodyW   = [72, 84, 96, 108, 116][stage];  // torso width
+  const armW    = [14, 18, 22, 26, 30][stage];     // arm thickness
+  const neckW   = [20, 24, 28, 32, 36][stage];     // neck width
+  const shoulderExtra = [0, 4, 10, 16, 22][stage]; // shoulder overhang
+
+  // Skin — slightly desaturated/darker at low levels, warmer at high
+  const SKINS   = ["#b87840","#c4844a","#d49058","#e0a068","#e8b078"];
+  const SKIN    = SKINS[stage];
+  const SKIN_S  = ["#885420","#9a6028","#aa7030","#b87838","#c08840"][stage];
+  const SKIN_H  = ["#d09858","#daa868","#e8bc78","#f0cc88","#f8dc98"][stage];
+
+  // Hair — muted/dark tones
+  const HAIR_C  = ["#181008","#2a1808","#181830","#083038","#a86808"][stage];
+  const HAIR_S  = ["#0a0804","#180e04","#0e0e20","#041e24","#785004"][stage];
+
+  // Shirt — muted, fits environment mood
+  const SHIRT_C = ["#3a5828","#803020","#185888","#4a1880","#c07808"][stage];
+  const SHIRT_S = ["#283c18","#581808","#0e3860","#301058","#886004"][stage];
+  const SHIRT_H = ["#587840","#a85040","#3080b0","#7038b0","#e0a020"][stage];
+
+  // Pants — always very dark
+  const PANT_C  = "#221810";
+  const PANT_S  = "#120c08";
+  const BOOT_C  = "#181008";
+  const BOOT_H  = "#302018";
+
+  // Eye color — duller at low, more vivid at high
+  const EYE_C   = ["#283848","#602010","#0a3860","#380868","#884000"][stage];
+
+  if (kneeling) {
+    return (
+      <svg width="80" height="66" viewBox="0 0 160 132" style={{overflow:"visible"}}>
+        <ellipse cx="80" cy="128" rx="50" ry="8" fill="#00000030"/>
+        <rect x="46" y="66" width="68" height="44" rx="10" fill={SHIRT_C}/>
+        <rect x="46" y="90" width="68" height="20" rx="0" fill={SHIRT_S}/>
+        <rect x="68" y="56" width="24" height="14" rx="6" fill={SKIN}/>
+        <rect x="32" y="14" width="96" height="48" rx="16" fill={SKIN}/>
+        <rect x="32" y="38" width="96" height="24" fill={SKIN_S} opacity="0.25"/>
+        <rect x="32" y="10" width="96" height="24" rx="14" fill={HAIR_C}/>
+        <rect x="32" y="22" width="96" height="12" fill={HAIR_C}/>
+        <rect x="48" y="26" width="22" height="10" rx="4" fill="#ffffff"/>
+        <rect x="90" y="26" width="22" height="10" rx="4" fill="#ffffff"/>
+        <rect x="54" y="28" width="8" height="7" rx="2" fill={EYE_C}/>
+        <rect x="96" y="28" width="8" height="7" rx="2" fill={EYE_C}/>
+        <rect x="46" y="22" width="26" height="6" rx="3" fill={HAIR_C} transform="rotate(8,59,25)"/>
+        <rect x="88" y="22" width="26" height="6" rx="3" fill={HAIR_C} transform="rotate(-8,101,25)"/>
+        <rect x="58" y="44" width="44" height="10" rx="5" fill="#ffffff"/>
+        <rect x="58" y="44" width="44" height="5" rx="2" fill={SKIN_S} opacity="0.3"/>
+        <rect x="30" y="104" width="36" height="16" rx="8" fill={PANT_C} transform="rotate(20,48,112)"/>
+        <rect x="94" y="104" width="36" height="16" rx="8" fill={PANT_C} transform="rotate(-20,112,112)"/>
+        <rect x="20" y="120" width="32" height="10" rx="4" fill={BOOT_C}/>
+        <rect x="108" y="120" width="32" height="10" rx="4" fill={BOOT_C}/>
+      </svg>
+    );
+  }
+
+  const cx = 80; // center x
+
+  return (
+    <svg width="80" height="130" viewBox="0 0 160 260"
+      style={{
+        overflow:"visible",
+        filter: isGod
+          ? "drop-shadow(0 0 8px #c07808aa)"
+          : isElite ? "drop-shadow(0 0 6px #4a188088)"
+          : "none",
+      }}>
+
+      <ellipse cx="80" cy="256" rx="46" ry="8" fill="#00000045"/>
+
+      {/* GOD halo */}
+      {isGod && <>
+        <ellipse cx={cx} cy="14" rx="50" ry="10" fill="none" stroke="#c07808" strokeWidth="4" opacity="0.8"/>
+        {[-24,-12,0,12,24].map((dx,i)=>(
+          <rect key={i} x={cx+dx-3} y={4} width={7} height={12} rx="2" fill="#e09010"/>
+        ))}
+      </>}
+
+      {/* ── BOOTS ── */}
+      <rect x={cx-50} y="232" width="44" height="24" rx="7" fill={BOOT_C}/>
+      <rect x={cx-58} y="242" width="28" height="14" rx="5" fill={BOOT_C}/>
+      <rect x={cx-56} y="242" width="26" height="7" rx="3" fill={BOOT_H}/>
+      <rect x={cx+6}  y="232" width="44" height="24" rx="7" fill={BOOT_C}/>
+      <rect x={cx+30} y="242" width="28" height="14" rx="5" fill={BOOT_C}/>
+      <rect x={cx+30} y="242" width="26" height="7" rx="3" fill={BOOT_H}/>
+
+      {/* ── PANTS ── */}
+      <rect x={cx-50} y="184" width="40" height="56" rx="9" fill={PANT_C}/>
+      <rect x={cx-44} y="194" width="12" height="36" rx="4" fill={PANT_S} opacity="0.5"/>
+      <rect x={cx+10} y="184" width="40" height="56" rx="9" fill={PANT_C}/>
+      <rect x={cx+32} y="194" width="12" height="36" rx="4" fill={PANT_S} opacity="0.5"/>
+      {/* crotch */}
+      <rect x={cx-50} y="180" width="100" height="18" rx="7" fill={PANT_C}/>
+      <rect x={cx-6}  y="180" width="12"  height="18" fill={PANT_S}/>
+
+      {/* ── BELT ── */}
+      <rect x={cx-52} y="170" width="104" height="14" rx="6" fill="#100a04"/>
+      <rect x={cx-12} y="171" width="24"  height="12" rx="4" fill="#604808"/>
+      <rect x={cx-7}  y="174" width="14"  height="6"  rx="2" fill="#c09010"/>
+
+      {/* ── TORSO / SHIRT ── */}
+      {/* shoulder bar */}
+      <rect x={cx - bodyW/2 - shoulderExtra} y="112"
+            width={bodyW + shoulderExtra*2} height="26" rx="16" fill={SHIRT_C}/>
+      {/* main body */}
+      <rect x={cx - bodyW/2} y="126" width={bodyW} height="52" rx="12" fill={SHIRT_C}/>
+      {/* shadow */}
+      <rect x={cx - bodyW/2} y="156" width={bodyW} height="22" rx="0" fill={SHIRT_S}/>
+      <rect x={cx - bodyW/2} y="165" width={bodyW} height="13" rx="0" fill={SHIRT_S} opacity="0.6"/>
+      {/* highlight */}
+      <rect x={cx - bodyW/2 + 14} y="116" width={bodyW - 28} height="16" rx="6" fill={SHIRT_H} opacity="0.25"/>
+      {/* V neck */}
+      <polygon points={`${cx-14},112 ${cx+14},112 ${cx},130`} fill={SKIN}/>
+      {/* chest badge */}
+      {isGod    && <><rect x={cx-12} y="138" width="24" height="18" rx="5" fill="#c07808"/><text x={cx} y="151" textAnchor="middle" fontSize="11" fill="#100a04">★</text></>}
+      {isElite  && <rect x={cx-10} y="138" width="20" height="18" rx="5" fill="#6020a0" opacity="0.9"/>}
+      {isStrong && <rect x={cx-10} y="140" width="20" height="14" rx="4" fill="#206050" opacity="0.9"/>}
+      {isRising && <rect x={cx-8}  y="140" width="16" height="12" rx="3" fill="#802010" opacity="0.9"/>}
+
+      {/* ── ARMS ── */}
+      {/* left upper arm */}
+      <rect x={cx - bodyW/2 - shoulderExtra - armW + 2} y="116"
+            width={armW} height={isStrong||isElite||isGod ? 52 : 44} rx={armW/2} fill={SKIN}/>
+      <rect x={cx - bodyW/2 - shoulderExtra - armW + 2} y={isStrong||isElite||isGod ? 144 : 138}
+            width={armW} height="20" rx={armW/2} fill={SKIN_S} opacity="0.3"/>
+      {/* left forearm */}
+      <rect x={cx - bodyW/2 - shoulderExtra - armW + 4} y={isStrong||isElite||isGod ? 162 : 154}
+            width={armW - 2} height="32" rx={(armW-2)/2} fill={SKIN}/>
+      {/* left fist */}
+      <rect x={cx - bodyW/2 - shoulderExtra - armW + 2} y={isStrong||isElite||isGod ? 190 : 182}
+            width={armW + 2} height="20" rx="8" fill={SKIN}/>
+      <rect x={cx - bodyW/2 - shoulderExtra - armW + 4} y={isStrong||isElite||isGod ? 196 : 188}
+            width={armW - 2} height="10" rx="4" fill={SKIN_S} opacity="0.35"/>
+
+      {/* right upper arm */}
+      <rect x={cx + bodyW/2 + shoulderExtra - 2} y="116"
+            width={armW} height={isStrong||isElite||isGod ? 52 : 44} rx={armW/2} fill={SKIN}/>
+      <rect x={cx + bodyW/2 + shoulderExtra - 2} y={isStrong||isElite||isGod ? 144 : 138}
+            width={armW} height="20" rx={armW/2} fill={SKIN_S} opacity="0.3"/>
+      {/* right forearm */}
+      <rect x={cx + bodyW/2 + shoulderExtra - 2} y={isStrong||isElite||isGod ? 162 : 154}
+            width={armW - 2} height="32" rx={(armW-2)/2} fill={SKIN}/>
+      {/* right fist */}
+      <rect x={cx + bodyW/2 + shoulderExtra - 4} y={isStrong||isElite||isGod ? 190 : 182}
+            width={armW + 2} height="20" rx="8" fill={SKIN}/>
+      <rect x={cx + bodyW/2 + shoulderExtra - 2} y={isStrong||isElite||isGod ? 196 : 188}
+            width={armW - 2} height="10" rx="4" fill={SKIN_S} opacity="0.35"/>
+
+      {/* ── NECK ── */}
+      <rect x={cx - neckW/2} y="100" width={neckW} height="18" rx="7" fill={SKIN}/>
+      <rect x={cx - neckW/2} y="110" width={neckW} height="8" rx="0" fill={SKIN_S} opacity="0.28"/>
+
+      {/* ── HEAD — narrower than before ── */}
+      {/* width scales slightly with stage but stays slim */}
+      <rect x={cx - 36 - stage*2} y="38" width={72 + stage*4} height="66" rx="18" fill={SKIN}/>
+      {/* jaw shadow */}
+      <rect x={cx - 36 - stage*2} y="82" width={72 + stage*4} height="22" rx="0" fill={SKIN_S} opacity="0.2"/>
+      {/* head highlight */}
+      <ellipse cx={cx} cy="56" rx={26 + stage*2} ry="14" fill={SKIN_H} opacity="0.2"/>
+
+      {/* ── HAIR ── */}
+      <rect x={cx - 36 - stage*2} y="32" width={72 + stage*4} height="24" rx="16" fill={HAIR_C}/>
+      <rect x={cx - 36 - stage*2} y="46" width={72 + stage*4} height="12" rx="0" fill={HAIR_C}/>
+      {/* quiff */}
+      <ellipse cx={cx + 12} cy="34" rx="18" ry="10" fill={HAIR_C}/>
+      <ellipse cx={cx + 12} cy="30" rx="14" ry="8" fill={HAIR_C}/>
+      {/* hair shadow */}
+      <rect x={cx - 24 - stage} y="34" width={48 + stage*2} height="8" rx="4" fill={HAIR_S} opacity="0.45"/>
+
+      {/* ── EARS ── */}
+      <ellipse cx={cx - 36 - stage*2} cy="70" rx="8" ry="10" fill={SKIN}/>
+      <ellipse cx={cx - 36 - stage*2} cy="70" rx="4" ry="6" fill={SKIN_S} opacity="0.3"/>
+      <ellipse cx={cx + 36 + stage*2} cy="70" rx="8" ry="10" fill={SKIN}/>
+      <ellipse cx={cx + 36 + stage*2} cy="70" rx="4" ry="6" fill={SKIN_S} opacity="0.3"/>
+
+      {/* ── EYEBROWS — thick angled ── */}
+      <rect x={cx-34} y="54" width="28" height="7" rx="3" fill={HAIR_C} transform={`rotate(${isStrong||isElite||isGod?8:5},${cx-20},57)`}/>
+      <rect x={cx+6}  y="54" width="28" height="7" rx="3" fill={HAIR_C} transform={`rotate(${isStrong||isElite||isGod?-8:-5},${cx+20},57)`}/>
+
+      {/* ── EYES ── */}
+      <rect x={cx-34} y="63" width="28" height="16" rx="5" fill="#ffffff"/>
+      <rect x={cx-34} y="63" width="28" height="7"  rx="4" fill={SKIN} opacity="0.4"/>
+      <rect x={cx-28} y="65" width="13" height="12" rx="4" fill={EYE_C}/>
+      <rect x={cx-26} y="67" width="8"  height="8"  rx="3" fill="#080604"/>
+      <rect x={cx-25} y="68" width="3"  height="3"  fill="#ffffff"/>
+
+      <rect x={cx+6}  y="63" width="28" height="16" rx="5" fill="#ffffff"/>
+      <rect x={cx+6}  y="63" width="28" height="7"  rx="4" fill={SKIN} opacity="0.4"/>
+      <rect x={cx+15} y="65" width="13" height="12" rx="4" fill={EYE_C}/>
+      <rect x={cx+17} y="67" width="8"  height="8"  rx="3" fill="#080604"/>
+      <rect x={cx+18} y="68" width="3"  height="3"  fill="#ffffff"/>
+
+      {/* ── NOSE ── */}
+      <ellipse cx={cx} cy="86" rx="9" ry="6" fill={SKIN_S} opacity="0.3"/>
+      <rect x={cx-7} y="86" width="14" height="4" rx="3" fill={SKIN_S} opacity="0.35"/>
+
+      {/* ── MOUTH — narrower grin ── */}
+      <rect x={cx-16} y="94" width="32" height="11" rx="5" fill="#100a04"/>
+      <rect x={cx-14} y="95" width="28" height="7"  rx="3" fill="#ffffff"/>
+      <rect x={cx-14} y="95" width="28" height="3"  rx="2" fill={SKIN_S} opacity="0.2"/>
+      {[cx-8, cx-2, cx+4].map((x,i)=>(
+        <rect key={i} x={x} y={95} width={1.5} height={7} fill="#b0a898" opacity="0.5"/>
+      ))}
+
+      {/* ── LEVEL BADGE ── */}
+      {level > 0 && (
+        <g>
+          <rect x="124" y="10" width="32" height="24" rx="7" fill={isGod?"#c07808":"#100a04"} opacity="0.9"/>
+          <text x="140" y="27" textAnchor="middle" fontSize="14" fontWeight="900"
+            fill={isGod?"#100a04":"#e8d8b0"} fontFamily="Arial Black, sans-serif">{level}</text>
+        </g>
+      )}
+    </svg>
+  );
+}
+// ─── ENVIRONMENT BACKGROUND SVG ───────────────────────────────────────────────
+function EnvironmentBG({ env, level }) {
+  const isGod = level >= 20;
+  const isElite = level >= 15;
+  const isStrong = level >= 10;
+  const isRoom = level >= 5 && level < 10;
+
+  // Street (dark city night)
+  if (level < 5) return (
+    <svg width="100%" height="100%" viewBox="0 0 400 560" preserveAspectRatio="xMidYMid slice" style={{ position: "absolute", inset: 0 }}>
+      <defs>
+        <linearGradient id="sky0" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#1a237e" />
+          <stop offset="100%" stopColor="#283593" />
+        </linearGradient>
+      </defs>
+      <rect width="400" height="560" fill="url(#sky0)" />
+      {/* Stars */}
+      {[30,70,120,180,250,310,360,50,150,220,290,340].map((x,i) => (
+        <circle key={i} cx={x} cy={20 + (i * 23) % 120} r="1.5" fill="white" opacity="0.7" />
+      ))}
+      {/* Moon */}
+      <circle cx="320" cy="70" r="28" fill="#fff9c4" />
+      <circle cx="334" cy="60" r="22" fill="#283593" />
+      {/* Buildings */}
+      <rect x="0" y="220" width="60" height="200" fill="#0d1b2a" />
+      <rect x="55" y="260" width="50" height="160" fill="#0a1628" />
+      <rect x="100" y="190" width="70" height="230" fill="#0d1b2a" />
+      <rect x="280" y="200" width="55" height="220" fill="#0d1b2a" />
+      <rect x="330" y="240" width="70" height="180" fill="#0a1628" />
+      {/* Windows */}
+      {[15,30,45].map(x => [240,260,280,300,320,340,360,380].map((y,i) =>
+        <rect key={`${x}-${y}`} x={x} y={y} width="8" height="10" fill={i%3===0 ? "#ffd740" : "#1a237e"} opacity="0.8" />
+      ))}
+      {[110,125,140,155].map(x => [210,230,250,270,290,310,330].map((y,i) =>
+        <rect key={`${x}-${y}`} x={x} y={y} width="8" height="10" fill={i%2===0 ? "#ffd740" : "#283593"} opacity="0.7" />
+      ))}
+      {/* Street */}
+      <rect x="0" y="430" width="400" height="130" fill="#263238" />
+      <rect x="0" y="430" width="400" height="12" fill="#37474f" />
+      {/* Road lines */}
+      {[40,100,160,220,280,340].map((x,i) => <rect key={i} x={x} y="490" width="40" height="6" rx="3" fill="#546e7a" />)}
+      {/* Lamppost */}
+      <rect x="80" y="370" width="6" height="64" fill="#546e7a" />
+      <ellipse cx="83" cy="370" rx="20" ry="5" fill="#546e7a" />
+      <ellipse cx="83" cy="368" rx="8" ry="4" fill="#ffd740" opacity="0.9" />
+      <rect x="300" y="380" width="6" height="54" fill="#546e7a" />
+      <ellipse cx="303" cy="380" rx="20" ry="5" fill="#546e7a" />
+      <ellipse cx="303" cy="378" rx="8" ry="4" fill="#ffd740" opacity="0.9" />
+      {/* Ground gradient overlay */}
+      <rect x="0" y="420" width="400" height="20" fill="#1a237e" opacity="0.15" />
+    </svg>
+  );
+
+  // Small Room (cozy interior)
+  if (level < 10) return (
+    <svg width="100%" height="100%" viewBox="0 0 400 560" preserveAspectRatio="xMidYMid slice" style={{ position: "absolute", inset: 0 }}>
+      <defs>
+        <linearGradient id="wall" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#ffe0b2" />
+          <stop offset="100%" stopColor="#ffcc80" />
+        </linearGradient>
+      </defs>
+      <rect width="400" height="560" fill="url(#wall)" />
+      {/* Floor */}
+      <rect x="0" y="430" width="400" height="130" fill="#8d6e63" />
+      {/* Floor planks */}
+      {[0,80,160,240,320].map((x,i) => <rect key={i} x={x} y="430" width="79" height="130" fill="none" stroke="#6d4c41" strokeWidth="1.5" />)}
+      {[0,80,160,240,320].map((x,i) => <rect key={i} x={x} y="495" width="79" height="1" fill="#6d4c41" opacity="0.4" />)}
+      {/* Wall border */}
+      <rect x="0" y="428" width="400" height="6" fill="#795548" />
+      {/* Window */}
+      <rect x="260" y="80" width="110" height="140" rx="6" fill="#b3e5fc" stroke="#795548" strokeWidth="6" />
+      <rect x="260" y="148" width="110" height="5" fill="#795548" />
+      <rect x="313" y="80" width="5" height="140" fill="#795548" />
+      {/* Sunlight through window */}
+      <polygon points="370,220 400,200 400,340 370,320" fill="#fff9c4" opacity="0.3" />
+      {/* Curtains */}
+      <rect x="248" y="72" width="24" height="156" rx="6" fill="#ef9a9a" />
+      <rect x="358" y="72" width="24" height="156" rx="6" fill="#ef9a9a" />
+      {/* Desk */}
+      <rect x="10" y="340" width="150" height="18" rx="4" fill="#795548" />
+      <rect x="20" y="356" width="10" height="76" rx="3" fill="#6d4c41" />
+      <rect x="140" y="356" width="10" height="76" rx="3" fill="#6d4c41" />
+      {/* Lamp on desk */}
+      <rect x="50" y="300" width="5" height="42" fill="#9e9e9e" />
+      <ellipse cx="52" cy="300" rx="22" ry="8" fill="#fff9c4" stroke="#bdbdbd" strokeWidth="2" />
+      <ellipse cx="52" cy="300" rx="12" ry="5" fill="#ffd740" opacity="0.8" />
+      {/* Plant */}
+      <rect x="340" y="370" width="20" height="30" rx="4" fill="#795548" />
+      <circle cx="350" cy="355" r="22" fill="#388e3c" />
+      <circle cx="335" cy="365" r="15" fill="#43a047" />
+      <circle cx="365" cy="363" r="16" fill="#2e7d32" />
+      {/* Bookshelf */}
+      <rect x="0" y="150" width="30" height="220" fill="#795548" />
+      {["#e53935","#1e88e5","#43a047","#fb8c00","#8e24aa","#00897b"].map((c,i)=>
+        <rect key={i} x="4" y={160 + i * 30} width="22" height="25" rx="2" fill={c} />
+      )}
+    </svg>
+  );
+
+  // Apartment (bright day city)
+  if (level < 15) return (
+    <svg width="100%" height="100%" viewBox="0 0 400 560" preserveAspectRatio="xMidYMid slice" style={{ position: "absolute", inset: 0 }}>
+      <defs>
+        <linearGradient id="sky2" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#90caf9" />
+          <stop offset="100%" stopColor="#e3f2fd" />
+        </linearGradient>
+      </defs>
+      <rect width="400" height="560" fill="url(#sky2)" />
+      {/* Sun */}
+      <circle cx="320" cy="80" r="48" fill="#fdd835" opacity="0.9" />
+      <circle cx="320" cy="80" r="38" fill="#ffee58" />
+      {/* Clouds */}
+      <ellipse cx="80" cy="100" rx="50" ry="22" fill="white" opacity="0.9" />
+      <ellipse cx="60" cy="106" rx="35" ry="18" fill="white" opacity="0.9" />
+      <ellipse cx="100" cy="108" rx="30" ry="16" fill="white" opacity="0.9" />
+      <ellipse cx="220" cy="70" rx="40" ry="18" fill="white" opacity="0.85" />
+      <ellipse cx="200" cy="76" rx="28" ry="14" fill="white" opacity="0.85" />
+      {/* Mountains */}
+      <polygon points="0,350 100,180 200,350" fill="#66bb6a" />
+      <polygon points="80,350 200,160 320,350" fill="#4caf50" />
+      <polygon points="200,350 330,190 400,280 400,350" fill="#388e3c" />
+      {/* Ground */}
+      <rect x="0" y="348" width="400" height="212" fill="#66bb6a" />
+      <rect x="0" y="348" width="400" height="20" fill="#4caf50" />
+      {/* Dirt bottom */}
+      <rect x="0" y="480" width="400" height="80" fill="#795548" />
+      {/* Grass bumps */}
+      {[0,30,60,90,120,150,180,210,240,270,300,330,360].map((x,i) =>
+        <ellipse key={i} cx={x + 15} cy="480" rx="22" ry="10" fill="#388e3c" />
+      )}
+      {/* Trees */}
+      <rect x="48" y="340" width="12" height="60" rx="4" fill="#5d4037" />
+      <circle cx="54" cy="320" r="34" fill="#43a047" />
+      <circle cx="40" cy="335" r="22" fill="#388e3c" />
+      <circle cx="70" cy="332" r="24" fill="#2e7d32" />
+      <rect x="310" y="345" width="12" height="55" rx="4" fill="#5d4037" />
+      <circle cx="316" cy="326" r="32" fill="#43a047" />
+      <circle cx="300" cy="340" r="22" fill="#388e3c" />
+      <circle cx="332" cy="338" r="20" fill="#2e7d32" />
+      {/* Birds */}
+      <path d="M140,130 Q145,124 150,130" stroke="#546e7a" strokeWidth="2" fill="none" />
+      <path d="M160,118 Q165,112 170,118" stroke="#546e7a" strokeWidth="2" fill="none" />
+      <path d="M175,140 Q180,134 185,140" stroke="#546e7a" strokeWidth="2" fill="none" />
+    </svg>
+  );
+
+  // House (magical sunset)
+  if (level < 20) return (
+    <svg width="100%" height="100%" viewBox="0 0 400 560" preserveAspectRatio="xMidYMid slice" style={{ position: "absolute", inset: 0 }}>
+      <defs>
+        <linearGradient id="sky3" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#ce93d8" />
+          <stop offset="50%" stopColor="#f48fb1" />
+          <stop offset="100%" stopColor="#ffcc80" />
+        </linearGradient>
+      </defs>
+      <rect width="400" height="560" fill="url(#sky3)" />
+      {/* Large sun */}
+      <circle cx="200" cy="300" r="100" fill="#ff8f00" opacity="0.25" />
+      <circle cx="200" cy="300" r="70" fill="#ffa000" opacity="0.35" />
+      <circle cx="200" cy="300" r="45" fill="#ffb300" opacity="0.5" />
+      {/* Clouds purple-tinted */}
+      <ellipse cx="60" cy="120" rx="55" ry="24" fill="#f3e5f5" opacity="0.8" />
+      <ellipse cx="40" cy="128" rx="38" ry="18" fill="#e1bee7" opacity="0.8" />
+      <ellipse cx="340" cy="90" rx="48" ry="22" fill="#f3e5f5" opacity="0.7" />
+      {/* Rolling hills */}
+      <ellipse cx="100" cy="420" rx="160" ry="80" fill="#4caf50" />
+      <ellipse cx="300" cy="440" rx="160" ry="80" fill="#388e3c" />
+      <rect x="0" y="430" width="400" height="130" fill="#4caf50" />
+      <rect x="0" y="500" width="400" height="60" fill="#795548" />
+      {/* Grass bumps */}
+      {[0,30,60,90,120,150,180,210,240,270,300,330,360].map((x,i) =>
+        <ellipse key={i} cx={x + 15} cy="500" rx="22" ry="10" fill="#2e7d32" />
+      )}
+      {/* Trees with magical tint */}
+      <rect x="30" y="360" width="14" height="72" rx="5" fill="#4e342e" />
+      <circle cx="37" cy="335" r="36" fill="#6a1b9a" opacity="0.8" />
+      <circle cx="20" cy="350" r="24" fill="#7b1fa2" opacity="0.7" />
+      <circle cx="55" cy="347" r="26" fill="#4a148c" opacity="0.8" />
+      <rect x="350" y="362" width="14" height="68" rx="5" fill="#4e342e" />
+      <circle cx="357" cy="338" r="34" fill="#6a1b9a" opacity="0.8" />
+      <circle cx="340" cy="353" r="22" fill="#7b1fa2" opacity="0.7" />
+      {/* Fireflies / stars */}
+      {[80,140,200,270,330,60,180,310].map((x,i) =>
+        <circle key={i} cx={x} cy={80 + (i * 40) % 200} r="2.5" fill="#ffd740" opacity="0.8" />
+      )}
+      {/* House in distance */}
+      <rect x="160" y="380" width="80" height="60" fill="#e8eaf6" />
+      <polygon points="140,380 200,340 260,380" fill="#e53935" />
+      <rect x="185" y="410" width="30" height="30" fill="#5c6bc0" />
+      <rect x="165" y="385" width="22" height="22" fill="#b3e5fc" stroke="#90caf9" strokeWidth="2" />
+      <rect x="213" y="385" width="22" height="22" fill="#b3e5fc" stroke="#90caf9" strokeWidth="2" />
+    </svg>
+  );
+
+  // Heaven
+  return (
+    <svg width="100%" height="100%" viewBox="0 0 400 560" preserveAspectRatio="xMidYMid slice" style={{ position: "absolute", inset: 0 }}>
+      <defs>
+        <linearGradient id="sky4" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#fff9c4" />
+          <stop offset="100%" stopColor="#fffde7" />
+        </linearGradient>
+        <radialGradient id="glow4" cx="50%" cy="40%" r="50%">
+          <stop offset="0%" stopColor="#ffd700" stopOpacity="0.4" />
+          <stop offset="100%" stopColor="#fff9c4" stopOpacity="0" />
+        </radialGradient>
+      </defs>
+      <rect width="400" height="560" fill="url(#sky4)" />
+      <rect width="400" height="560" fill="url(#glow4)" />
+      {/* Big sun */}
+      <circle cx="200" cy="120" r="90" fill="#fff176" opacity="0.5" />
+      <circle cx="200" cy="120" r="60" fill="#ffee58" opacity="0.7" />
+      <circle cx="200" cy="120" r="36" fill="#fdd835" />
+      {/* Rays */}
+      {[0,30,60,90,120,150,180,210,240,270,300,330].map((deg,i) => (
+        <line key={i} x1="200" y1="120"
+          x2={200 + Math.cos(deg * Math.PI / 180) * 120}
+          y2={120 + Math.sin(deg * Math.PI / 180) * 120}
+          stroke="#fdd835" strokeWidth="2" opacity="0.4"
+        />
+      ))}
+      {/* Clouds — fluffy white */}
+      {[[60,200],[200,160],[340,190],[100,280],[300,250]].map(([cx,cy],i) => (
+        <g key={i}>
+          <ellipse cx={cx} cy={cy} rx="60" ry="28" fill="white" opacity="0.95" />
+          <ellipse cx={cx - 25} cy={cy + 8} rx="38" ry="22" fill="white" opacity="0.95" />
+          <ellipse cx={cx + 25} cy={cy + 6} rx="40" ry="22" fill="white" opacity="0.95" />
+        </g>
+      ))}
+      {/* Ground clouds */}
+      <rect x="0" y="440" width="400" height="120" fill="white" opacity="0.85" />
+      <ellipse cx="200" cy="440" rx="200" ry="30" fill="white" opacity="0.9" />
+      {[0,50,100,150,200,250,300,350].map((x,i) =>
+        <ellipse key={i} cx={x + 25} cy="440" rx="35" ry="18" fill="#fff9c4" opacity="0.7" />
+      )}
+      {/* Stars / sparkles */}
+      {[50,120,200,280,360,80,170,250,330].map((x,i) =>
+        <text key={i} x={x} y={50 + (i * 45) % 350} fontSize="14" textAnchor="middle" opacity="0.7">✦</text>
+      )}
+    </svg>
+  );
+}
+
+// ─── PROGRESS BAR ─────────────────────────────────────────────────────────────
+function ProgressBar({ xp, level }) {
+  const isGod = level >= 20;
+  if (isGod) return (
+    <div style={{ width: "100%" }}>
+      <div style={{ fontSize: 10, color: "#ffd700", fontFamily: "monospace", letterSpacing: 2, marginBottom: 4, textAlign: "center" }}>
+        MAX LEVEL ★
+      </div>
+      <div style={{ height: 8, borderRadius: 4, background: "linear-gradient(90deg,#ffd700,#ff8f00,#ffd700)", backgroundSize: "200%", animation: "shimmer 2s linear infinite" }} />
+    </div>
+  );
+  const lo = LEVEL_THRESHOLDS[level];
+  const hi = LEVEL_THRESHOLDS[level + 1];
+  const pct = Math.max(0, Math.min(1, (xp - lo) / (hi - lo)));
+  const barColor = level >= 15 ? "linear-gradient(90deg,#ce93d8,#9c27b0)"
+    : level >= 10 ? "linear-gradient(90deg,#90caf9,#1e88e5)"
+    : level >= 5 ? "linear-gradient(90deg,#a5d6a7,#388e3c)"
+    : "linear-gradient(90deg,#546e7a,#90a4ae)";
+  return (
+    <div style={{ width: "100%" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "rgba(255,255,255,0.6)", fontFamily: "monospace", marginBottom: 4 }}>
+        <span>Lvl {level}</span><span>Lvl {level + 1}</span>
+      </div>
+      <div style={{ height: 8, borderRadius: 4, background: "rgba(0,0,0,0.25)", overflow: "hidden" }}>
+        <div style={{ height: "100%", width: `${pct * 100}%`, borderRadius: 4, background: barColor, transition: "width 0.8s cubic-bezier(0.4,0,0.2,1)" }} />
+      </div>
+    </div>
+  );
+}
+
+// ─── HISTORY TIMELINE ─────────────────────────────────────────────────────────
+function HistoryTimeline({ history }) {
+  const last30 = history.slice(-30);
+  return (
+    <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+      {last30.map((h, i) => (
+        <div key={i} title={`${h.date} — ${h.pct}% (${h.result})`} style={{
+          width: 16, height: 16, borderRadius: 4,
+          background: h.result === "perfect" ? "#66bb6a" : h.result === "neutral" ? "#ffa726" : "#ef5350",
+          boxShadow: h.result === "perfect" ? "0 0 4px #66bb6a88" : "none",
+        }} />
+      ))}
+      {last30.length === 0 && <span style={{ color: "rgba(255,255,255,0.3)", fontSize: 12 }}>Nog geen dagen gelogd.</span>}
+    </div>
+  );
+}
+
+// ─── CHECKLIST ────────────────────────────────────────────────────────────────
+function CheckList({ checks, values, onChange, submitted }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {checks.map((c, i) => (
+        <div key={i} style={{
+          display: "flex", alignItems: "center", gap: 12,
+          padding: "12px 14px", borderRadius: 12,
+          background: values[i] === "achieved"
+            ? "rgba(102,187,106,0.12)"
+            : values[i] === "na"
+            ? "rgba(255,255,255,0.04)"
+            : "rgba(255,255,255,0.07)",
+          border: `1.5px solid ${values[i] === "achieved" ? "#66bb6a55" : values[i] === "na" ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.1)"}`,
+          transition: "all 0.2s",
+        }}>
+          <button disabled={submitted} onClick={() => !submitted && onChange(i, values[i] === "achieved" ? "not" : "achieved")} style={{
+            width: 26, height: 26, borderRadius: 7,
+            border: `2px solid ${values[i] === "achieved" ? "#66bb6a" : "rgba(255,255,255,0.2)"}`,
+            background: values[i] === "achieved" ? "#66bb6a" : "transparent",
+            cursor: submitted ? "not-allowed" : "pointer",
+            display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+            transition: "all 0.2s",
+          }}>
+            {values[i] === "achieved" && <span style={{ color: "white", fontSize: 13, fontWeight: "bold" }}>✓</span>}
+          </button>
+          <button disabled={submitted} onClick={() => !submitted && onChange(i, values[i] === "na" ? "not" : "na")} style={{
+            padding: "2px 7px", borderRadius: 6,
+            border: `1.5px solid ${values[i] === "na" ? "rgba(255,255,255,0.35)" : "rgba(255,255,255,0.1)"}`,
+            background: "transparent",
+            cursor: submitted ? "not-allowed" : "pointer",
+            fontSize: 9, color: values[i] === "na" ? "rgba(255,255,255,0.6)" : "rgba(255,255,255,0.25)",
+            fontFamily: "monospace", letterSpacing: 1, flexShrink: 0,
+          }}>N/A</button>
+          <span style={{
+            color: values[i] === "na" ? "rgba(255,255,255,0.25)" : values[i] === "achieved" ? "rgba(255,255,255,0.95)" : "rgba(255,255,255,0.7)",
+            fontSize: 14, flex: 1,
+            textDecoration: values[i] === "na" ? "line-through" : "none",
+          }}>{c}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── COLLAPSE OVERLAY ─────────────────────────────────────────────────────────
+function CollapseOverlay({ visible, onDone }) {
+  useEffect(() => {
+    if (visible) { const t = setTimeout(onDone, 4000); return () => clearTimeout(t); }
+  }, [visible]);
+  if (!visible) return null;
+  return (
+    <div style={{
+      position: "fixed", inset: 0, background: "rgba(0,0,0,0.95)", zIndex: 1000,
+      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+      animation: "fadeIn 0.5s ease",
+    }}>
+      <div style={{ marginBottom: 24 }}>
+        <AvatarSVG level={0} kneeling={true} />
+      </div>
+      <div style={{ fontFamily: "monospace", fontSize: 22, color: "#ef5350", letterSpacing: 3, marginBottom: 12, textTransform: "uppercase" }}>
+        SYSTEM COLLAPSED
+      </div>
+      <div style={{ fontFamily: "monospace", fontSize: 13, color: "rgba(255,255,255,0.4)", letterSpacing: 1, textAlign: "center" }}>
+        Your system collapsed.<br />Adjust your approach.
+      </div>
+    </div>
+  );
+}
+
+// ─── DEFAULT STATE ─────────────────────────────────────────────────────────────
+const DEFAULT_STATE = {
+  xp: 0, level: 0, streak: 0, collapseCounter: 0, badges: [],
+  history: [],
+  checks: ["Vroeg opstaan", "Sporten", "Geen junkfood", "Gefocust werken 2u", "Lezen 30min"],
+  todaySubmitted: false,
+  todayDate: new Date().toDateString(),
+  lastDayResult: null,
+};
+
+function loadState() {
+  try {
+    const s = localStorage.getItem("discipline-engine-v2");
+    if (s) {
+      const parsed = JSON.parse(s);
+      const today = new Date().toDateString();
+      // New day — reset submission so user can log today
+      if (parsed.todayDate !== today) {
+        return { ...DEFAULT_STATE, ...parsed, todaySubmitted: false, todayDate: today, lastDayResult: null };
+      }
+      return { ...DEFAULT_STATE, ...parsed };
+    }
+  } catch {}
+  return { ...DEFAULT_STATE };
+}
+function saveState(s) {
+  try { localStorage.setItem("discipline-engine-v2", JSON.stringify(s)); } catch {}
+}
+
+// ─── MAIN APP ─────────────────────────────────────────────────────────────────
+function App() {
+  const [state, setState] = useState(() => loadState());
+  const [checkValues, setCheckValues] = useState(() => Array(loadState().checks.length).fill("not"));
+  const [page, setPage] = useState("world"); // "world" | "goals"
+  const [newCheck, setNewCheck] = useState("");
+  const [collapseVisible, setCollapseVisible] = useState(false);
+  const [showReset, setShowReset] = useState(false);
+  const [flashResult, setFlashResult] = useState(null);
+  const [showManage, setShowManage] = useState(false);
+  const [dragIndex, setDragIndex] = useState(null);
+  const [dragOver, setDragOver] = useState(null);
+  const [showConfetti, setShowConfetti] = useState(false);
+  const [musicOn, setMusicOn] = useState(false);
+  const [avatarAnim, setAvatarAnim] = useState(null); // 'jump'|'cheer'|'sink'
+  const pendingAnimRef = useRef(null);
+  const musicRef = useRef(null);
+
+  function playNeutralSound() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      // Bittersweet suspended chord
+      [261.6, 329.6, 392, 466.2].forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.18, ctx.currentTime);
+        gain.gain.linearRampToValueAtTime(0.12, ctx.currentTime + 0.4);
+        gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 1.2);
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start(ctx.currentTime + i * 0.06);
+        osc.stop(ctx.currentTime + 1.4);
+      });
+    } catch(e) {}
+  }
+
+  function playBadSound() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      // Descending dramatic notes
+      const notes = [311.1, 277.2, 246.9, 220];
+      notes.forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sawtooth";
+        const filter = ctx.createBiquadFilter();
+        filter.type = "lowpass";
+        filter.frequency.value = 600;
+        osc.frequency.setValueAtTime(freq, ctx.currentTime + i * 0.18);
+        gain.gain.setValueAtTime(0.22, ctx.currentTime + i * 0.18);
+        gain.gain.linearRampToValueAtTime(0, ctx.currentTime + i * 0.18 + 0.35);
+        osc.connect(filter); filter.connect(gain); gain.connect(ctx.destination);
+        osc.start(ctx.currentTime + i * 0.18);
+        osc.stop(ctx.currentTime + i * 0.18 + 0.4);
+      });
+    } catch(e) {}
+  }
+
+  function startMusic(level) {
+    if (musicRef.current) stopMusic();
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const master = ctx.createGain();
+      master.gain.value = 0.07;
+      master.connect(ctx.destination);
+
+      // Pick music style based on environment level
+      const envLevel = level !== undefined ? level : state.level;
+
+      // --- LO-FI (Street, level 0-4) ---
+      // Slow jazzy chords, muffled, heavy low-pass
+      const LOFI_CHORDS = [
+        [146.8, 185, 220, 277.2],   // Dm7
+        [130.8, 164.8, 196, 246.9], // Cmaj7
+        [110, 138.6, 164.8, 207.7], // Am7
+        [123.5, 155.6, 185, 233.1], // Bm7b5
+      ];
+
+      // --- ROOM/APARTMENT (level 5-9, 10-14) ---
+      // Upbeat simple pop chords
+      const POP_CHORDS = [
+        [261.6, 329.6, 392],  // C
+        [220, 277.2, 329.6],  // Am
+        [174.6, 220, 261.6],  // F
+        [196, 246.9, 293.7],  // G
+      ];
+
+      // --- HOUSE/VILLA (level 15-19) ---
+      // Cinematic minor, building tension
+      const EPIC_CHORDS = [
+        [110, 138.6, 164.8, 220],   // Am
+        [98, 123.5, 146.8, 196],    // Gm
+        [116.5, 146.8, 174.6, 233.1], // Bb
+        [130.8, 164.8, 196, 261.6], // C
+      ];
+
+      // --- HEAVEN (level 20) ---
+      // Bright major, soaring, triumphant
+      const HEAVEN_CHORDS = [
+        [261.6, 329.6, 392, 523.3],   // Cmaj
+        [293.7, 370, 440, 587.3],     // Dmaj
+        [329.6, 415.3, 493.9, 659.3], // Emaj
+        [349.2, 440, 523.3, 698.5],   // Fmaj
+      ];
+
+      let chords, BPM, oscType, filterFreq, melodyNotes, melodyOscType;
+      if (envLevel >= 20) {
+        // Heaven — bright, fast, triumphant
+        chords = HEAVEN_CHORDS; BPM = 96;
+        oscType = "sine"; filterFreq = 8000;
+        melodyNotes = [523.3, 587.3, 659.3, 698.5, 783.9, 698.5, 659.3, 587.3, 523.3, 493.9, 523.3, 659.3];
+        melodyOscType = "triangle";
+      } else if (envLevel >= 15) {
+        // Epic cinematic
+        chords = EPIC_CHORDS; BPM = 72;
+        oscType = "sawtooth"; filterFreq = 800;
+        melodyNotes = [220, 246.9, 261.6, 220, 196, 174.6, 196, 220, 246.9, 220, 196, 220];
+        melodyOscType = "sawtooth";
+      } else if (envLevel >= 5) {
+        // Pop / upbeat
+        chords = POP_CHORDS; BPM = 84;
+        oscType = "sine"; filterFreq = 4000;
+        melodyNotes = [392, 440, 392, 349.2, 329.6, 349.2, 392, 329.6, 293.7, 329.6, 349.2, 392];
+        melodyOscType = "triangle";
+      } else {
+        // Lo-fi
+        chords = LOFI_CHORDS; BPM = 68;
+        oscType = "triangle"; filterFreq = 900;
+        melodyNotes = [220, 196, 174.6, 164.8, 174.6, 196, 220, 196, 174.6, 164.8, 185, 196];
+        melodyOscType = "triangle";
+      }
+
+      const BEAT = 60 / BPM;
+      const CHORD_DUR = BEAT * 4;
+      const LOOP_DUR = CHORD_DUR * chords.length;
+
+      function playChord(frequencies, startTime, duration) {
+        frequencies.forEach(freq => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          const filter = ctx.createBiquadFilter();
+          filter.type = "lowpass";
+          filter.frequency.value = filterFreq;
+          osc.type = oscType;
+          osc.frequency.value = freq;
+          gain.gain.setValueAtTime(0, startTime);
+          gain.gain.linearRampToValueAtTime(0.9, startTime + 0.6);
+          gain.gain.setValueAtTime(0.9, startTime + duration - 0.6);
+          gain.gain.linearRampToValueAtTime(0, startTime + duration);
+          osc.connect(filter); filter.connect(gain); gain.connect(master);
+          osc.start(startTime); osc.stop(startTime + duration);
+          // warm sub
+          const sub = ctx.createOscillator();
+          const subG = ctx.createGain();
+          sub.type = "sine"; sub.frequency.value = freq / 2;
+          subG.gain.setValueAtTime(0, startTime);
+          subG.gain.linearRampToValueAtTime(0.35, startTime + 0.8);
+          subG.gain.setValueAtTime(0.35, startTime + duration - 0.6);
+          subG.gain.linearRampToValueAtTime(0, startTime + duration);
+          sub.connect(subG); subG.connect(master);
+          sub.start(startTime); sub.stop(startTime + duration);
+        });
+      }
+
+      const melodyGain = ctx.createGain();
+      melodyGain.gain.value = envLevel >= 20 ? 0.5 : envLevel >= 15 ? 0.3 : 0.35;
+      melodyGain.connect(master);
+
+      function playMelodyNote(freq, startTime) {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        const filter = ctx.createBiquadFilter();
+        filter.type = "lowpass";
+        filter.frequency.value = filterFreq * 1.5;
+        osc.type = melodyOscType;
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.7, startTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, startTime + BEAT * 0.8);
+        osc.connect(filter); filter.connect(gain); gain.connect(melodyGain);
+        osc.start(startTime); osc.stop(startTime + BEAT);
+      }
+
+      function scheduleLoop(startTime) {
+        chords.forEach((chord, i) => playChord(chord, startTime + i * CHORD_DUR, CHORD_DUR + 0.15));
+        melodyNotes.forEach((note, i) => playMelodyNote(note, startTime + i * BEAT));
+      }
+
+      for (let i = 0; i < 8; i++) scheduleLoop(ctx.currentTime + 0.1 + i * LOOP_DUR);
+
+      musicRef.current = { ctx, master };
+      setMusicOn(true);
+    } catch(e) {}
+  }
+
+  function stopMusic() {
+    if (!musicRef.current) return;
+    try {
+      const { ctx, master } = musicRef.current;
+      master.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.8);
+      setTimeout(() => { try { ctx.close(); } catch(e){} }, 900);
+    } catch(e) {}
+    musicRef.current = null;
+    setMusicOn(false);
+  }
+
+  function toggleMusic() {
+    if (musicOn) stopMusic(); else startMusic(state.level);
+  }
+
+  // Trumpet fanfare via Web Audio API
+  function playWinSound() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+
+      function playNote(freq, startTime, duration, volume = 0.3) {
+        // Sawtooth + square blend = brassy trumpet timbre
+        const osc1 = ctx.createOscillator();
+        const osc2 = ctx.createOscillator();
+        const osc3 = ctx.createOscillator(); // octave harmonic
+        const gain = ctx.createGain();
+        const filter = ctx.createBiquadFilter();
+
+        osc1.type = "sawtooth";
+        osc2.type = "square";
+        osc3.type = "sawtooth";
+        osc1.frequency.value = freq;
+        osc2.frequency.value = freq;
+        osc3.frequency.value = freq * 2; // octave up — adds brightness
+
+        // Mix oscillators
+        const g1 = ctx.createGain(); g1.gain.value = 0.6;
+        const g2 = ctx.createGain(); g2.gain.value = 0.25;
+        const g3 = ctx.createGain(); g3.gain.value = 0.15;
+        osc1.connect(g1); osc2.connect(g2); osc3.connect(g3);
+        g1.connect(filter); g2.connect(filter); g3.connect(filter);
+
+        // Bandpass filter — gives that nasal trumpet character
+        filter.type = "bandpass";
+        filter.frequency.value = freq * 3;
+        filter.Q.value = 0.8;
+        filter.connect(gain);
+        gain.connect(ctx.destination);
+
+        // Trumpet envelope: fast attack, slight decay, sustain, quick release
+        gain.gain.setValueAtTime(0, startTime);
+        gain.gain.linearRampToValueAtTime(volume, startTime + 0.02);
+        gain.gain.linearRampToValueAtTime(volume * 0.75, startTime + 0.06);
+        gain.gain.setValueAtTime(volume * 0.75, startTime + duration - 0.04);
+        gain.gain.linearRampToValueAtTime(0, startTime + duration);
+
+        osc1.start(startTime); osc1.stop(startTime + duration);
+        osc2.start(startTime); osc2.stop(startTime + duration);
+        osc3.start(startTime); osc3.stop(startTime + duration);
+      }
+
+      const t = ctx.currentTime;
+      // Classic "ta-ta-ta-TAAA" military fanfare
+      playNote(392, t + 0.00, 0.12, 0.28); // G4
+      playNote(392, t + 0.13, 0.12, 0.28); // G4
+      playNote(392, t + 0.26, 0.12, 0.28); // G4
+      playNote(523, t + 0.39, 0.18, 0.32); // C5
+      playNote(392, t + 0.58, 0.10, 0.26); // G4
+      playNote(523, t + 0.69, 0.38, 0.36); // C5 long
+
+      // Second phrase — rising
+      playNote(523, t + 1.15, 0.10, 0.28); // C5
+      playNote(587, t + 1.26, 0.10, 0.28); // D5
+      playNote(659, t + 1.37, 0.10, 0.28); // E5
+      playNote(784, t + 1.48, 0.48, 0.38); // G5 — triumphant final
+    } catch(e) {}
+  }
+
+  const env = getEnvironment(state.level);
+  const isGod = state.level >= 20;
+
+  useEffect(() => { saveState(state); }, [state]);
+  useEffect(() => { setCheckValues(Array(state.checks.length).fill("not")); }, [state.checks.length]);
+
+  // Restart music when environment changes (every 5 levels)
+  const envTier = Math.floor(state.level / 5);
+  useEffect(() => {
+    if (musicOn) startMusic(state.level);
+  }, [envTier]);
+
+  function handleCheckChange(i, val) {
+    setCheckValues(prev => { const n = [...prev]; n[i] = val; return n; });
+    if (val === "achieved") playTickSound();
+  }
+
+  function playTickSound() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      // Short satisfying "pop" — high sine blip + soft click
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(1200, ctx.currentTime + 0.06);
+      gain.gain.setValueAtTime(0.25, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.14);
+      // Soft click layered on top
+      const click = ctx.createOscillator();
+      const clickGain = ctx.createGain();
+      click.type = "square";
+      click.frequency.value = 2400;
+      clickGain.gain.setValueAtTime(0.08, ctx.currentTime);
+      clickGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.04);
+      click.connect(clickGain); clickGain.connect(ctx.destination);
+      click.start(ctx.currentTime);
+      click.stop(ctx.currentTime + 0.05);
+    } catch(e) {}
+  }
+
+  function submitDay() {
+    const active = checkValues.filter(v => v !== "na");
+    const achieved = checkValues.filter(v => v === "achieved");
+    if (active.length === 0) return;
+    const pct = Math.round((achieved.length / active.length) * 100);
+    let result, newXp, newStreak, newCollapse;
+    if (pct === 100) {
+      result = "perfect"; newXp = Math.min(XP_MAX, state.xp + xpGain(state.level));
+      newStreak = state.streak + 1; newCollapse = 0;
+    } else if (pct >= 80) {
+      result = "neutral"; newXp = state.xp; newStreak = 0; newCollapse = state.collapseCounter;
+    } else {
+      result = "bad"; newXp = Math.max(0, state.xp - xpLoss(state.level));
+      newStreak = 0; newCollapse = state.collapseCounter + 1;
+    }
+    const newLevel = xpToLevel(newXp);
+    const histEntry = { date: new Date().toDateString(), result, pct };
+    let newBadges = [...state.badges];
+    if (newLevel >= 20 && state.level < 20) newBadges.push(`Badge ${toRoman(newBadges.length + 1)}`);
+    const didCollapse = newCollapse >= 5;
+    if (didCollapse) {
+      setCollapseVisible(true);
+      setState(prev => ({ ...prev, xp: 0, level: 0, streak: 0, collapseCounter: 0, history: [], badges: newBadges, todaySubmitted: true, todayDate: new Date().toDateString(), lastDayResult: "bad" }));
+    } else {
+      setState(prev => ({ ...prev, xp: newXp, level: newLevel, streak: newStreak, collapseCounter: newCollapse, badges: newBadges, history: [...prev.history, histEntry], todaySubmitted: true, todayDate: new Date().toDateString(), lastDayResult: result }));
+    }
+    setFlashResult(result);
+    if (result === "perfect") {
+      setShowConfetti(true);
+      playWinSound();
+      setTimeout(() => setShowConfetti(false), 3500);
+      pendingAnimRef.current = "cheer";
+    } else if (result === "neutral") {
+      playNeutralSound();
+      pendingAnimRef.current = "jump";
+    } else {
+      playBadSound();
+      pendingAnimRef.current = "sink";
+    }
+  }
+
+  function voluntaryReset() {
+    setState(prev => ({ ...prev, xp: 0, level: 0, streak: 0, collapseCounter: 0, history: [], todaySubmitted: false, lastDayResult: null }));
+    setCheckValues(Array(state.checks.length).fill("not"));
+    setShowReset(false); setFlashResult(null);
+  }
+
+  function addCheck() {
+    if (!newCheck.trim()) return;
+    setState(prev => ({ ...prev, checks: [...prev.checks, newCheck.trim()] }));
+    setNewCheck("");
+  }
+
+  function removeCheck(i) {
+    setState(prev => ({ ...prev, checks: prev.checks.filter((_, j) => j !== i) }));
+  }
+
+  // Env-based overlay color
+  const overlayColor = isGod
+    ? "rgba(255,214,0,0.18)"
+    : state.level >= 15 ? "rgba(156,39,176,0.18)"
+    : state.level >= 10 ? "rgba(30,136,229,0.18)"
+    : state.level >= 5 ? "rgba(255,143,0,0.18)"
+    : "rgba(26,35,126,0.22)";
+
+  const textColor = (state.level >= 5 && state.level < 10) ? "#3e2723" : "white";
+  const textColorSub = (state.level >= 5 && state.level < 10) ? "rgba(62,39,35,0.6)" : "rgba(255,255,255,0.6)";
+
+  return (
+    <div style={{ width: "100%", maxWidth: 430, margin: "0 auto", minHeight: "100vh", position: "relative", overflow: "hidden", fontFamily: "'Nunito', 'Segoe UI', sans-serif" }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap');
+        @keyframes fadeIn { from{opacity:0} to{opacity:1} }
+        @keyframes slideUp { from{opacity:0;transform:translateY(16px)} to{opacity:1;transform:translateY(0)} }
+        @keyframes shimmer { 0%{background-position:0%} 100%{background-position:200%} }
+        @keyframes bob { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-8px)} }
+        @keyframes godPulse { 0%,100%{filter:drop-shadow(0 0 10px #ffd700)} 50%{filter:drop-shadow(0 0 28px #ffd700)} }
+        @keyframes confettiFall { 0%{transform:translateY(-20px) rotate(0deg);opacity:1} 100%{transform:translateY(110vh) rotate(720deg);opacity:0} }
+        @keyframes confettiSway { 0%,100%{margin-left:0px} 50%{margin-left:30px} }
+        @keyframes avatarCheer { 0%{transform:translateY(0) scale(1)} 20%{transform:translateY(-18px) scale(1.08)} 40%{transform:translateY(0) scale(1)} 60%{transform:translateY(-10px) scale(1.04)} 80%{transform:translateY(0) scale(1)} 100%{transform:translateY(0) scale(1)} }
+        @keyframes avatarJump { 0%{transform:translateY(0)} 40%{transform:translateY(-10px)} 100%{transform:translateY(0)} }
+        @keyframes avatarSink { 0%{transform:translateY(0) rotate(0deg)} 30%{transform:translateY(4px) rotate(-4deg)} 60%{transform:translateY(8px) rotate(2deg)} 100%{transform:translateY(6px) rotate(-2deg)} }
+        * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+        button { border:none; outline:none; }
+      `}</style>
+
+      <CollapseOverlay visible={collapseVisible} onDone={() => setCollapseVisible(false)} />
+
+      {/* ── CONFETTI OVERLAY ── */}
+      {showConfetti && (
+        <div style={{ position:"fixed", inset:0, zIndex:999, pointerEvents:"none", overflow:"hidden" }}>
+          {Array.from({length: 60}).map((_, i) => {
+            const colors = ["#66bb6a","#fbbf24","#f87171","#60a5fa","#a78bfa","#f472b6","#34d399","#fb923c"];
+            const color  = colors[i % colors.length];
+            const left   = Math.random() * 100;
+            const delay  = Math.random() * 1.2;
+            const dur    = 2.2 + Math.random() * 1.2;
+            const size   = 7 + Math.random() * 8;
+            const isRect = i % 3 !== 0;
+            return (
+              <div key={i} style={{
+                position:"absolute",
+                left: `${left}%`,
+                top: -20,
+                width:  isRect ? size : size * 0.7,
+                height: isRect ? size * 0.5 : size * 0.7,
+                borderRadius: isRect ? 2 : "50%",
+                background: color,
+                animation: `confettiFall ${dur}s ${delay}s ease-in forwards, confettiSway ${dur * 0.6}s ${delay}s ease-in-out infinite`,
+                opacity: 1,
+              }}/>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ─── PAGE: WORLD ─── */}
+      {page === "world" && (
+        <div style={{ width: "100%", height: "100vh", position: "relative", display: "flex", flexDirection: "column" }}>
+
+          {/* Background */}
+          <div style={{ position: "absolute", inset: 0 }}>
+            <EnvironmentBG env={env} level={state.level} />
+            {/* Subtle overlay for readability */}
+            <div style={{ position: "absolute", inset: 0, background: overlayColor, pointerEvents: "none" }} />
+          </div>
+
+          {/* Top HUD */}
+          <div style={{
+            position: "relative", zIndex: 10,
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            padding: "14px 18px 0",
+          }}>
+            <div style={{
+              background: "rgba(0,0,0,0.28)", backdropFilter: "blur(8px)",
+              borderRadius: 16, padding: "8px 16px",
+              display: "flex", alignItems: "center", gap: 10,
+            }}>
+              <span style={{ fontSize: 22, fontWeight: 900, color: isGod ? "#ffd700" : textColor, lineHeight: 1 }}>
+                {state.level}
+              </span>
+              <span style={{ fontSize: 11, color: textColorSub, fontWeight: 600 }}>/ 20</span>
+              <span style={{ fontSize: 12, color: state.streak > 0 ? "#ffa726" : textColorSub }}>🔥 {state.streak}</span>
+              <span style={{ fontSize: 12, color: state.collapseCounter >= 3 ? "#ef5350" : textColorSub }}>💀 {state.collapseCounter}/5</span>
+            </div>
+
+            <div style={{
+              background: "rgba(0,0,0,0.28)", backdropFilter: "blur(8px)",
+              borderRadius: 16, padding: "8px 14px",
+              fontSize: 11, color: textColor, fontWeight: 700, letterSpacing: 1,
+            }}>
+              {env.name.toUpperCase()}
+            </div>
+          </div>
+
+          {/* Avatar — centered in world */}
+          <div style={{
+            position: "relative", zIndex: 10,
+            flex: 1,
+            display: "flex", flexDirection: "column",
+            alignItems: "center", justifyContent: "flex-end",
+            paddingBottom: 40,
+          }}>
+            <div style={{
+              animation: avatarAnim === "cheer" ? "avatarCheer 1.8s ease"
+                : avatarAnim === "jump" ? "avatarJump 0.9s ease"
+                : avatarAnim === "sink" ? "avatarSink 1.2s ease forwards"
+                : isGod ? "godPulse 2s infinite" : "bob 3s ease-in-out infinite",
+              transformOrigin: "bottom center",
+            }}>
+              <AvatarSVG level={state.level} />
+            </div>
+            {/* Stage label */}
+            <div style={{
+              marginTop: 8,
+              background: "rgba(0,0,0,0.3)", backdropFilter: "blur(6px)",
+              borderRadius: 20, padding: "4px 18px",
+              fontSize: 11, fontWeight: 800, letterSpacing: 3,
+              color: isGod ? "#ffd700" : "white",
+            }}>
+              {["BEGINNER","RISING","STRONG","ELITE","GOD"][Math.min(Math.floor(state.level / 5), 4)]}
+            </div>
+          </div>
+
+          {/* Bottom panel */}
+          <div style={{
+            position: "relative", zIndex: 10,
+            background: "rgba(0,0,0,0.42)", backdropFilter: "blur(16px)",
+            borderRadius: "24px 24px 0 0",
+            padding: "18px 20px 28px",
+          }}>
+            {/* XP Bar */}
+            <div style={{ marginBottom: 14 }}>
+              <ProgressBar xp={state.xp} level={state.level} />
+            </div>
+
+            {/* Day result flash */}
+            {flashResult && (
+              <div style={{
+                marginBottom: 12, padding: "10px 14px", borderRadius: 12,
+                background: flashResult === "perfect" ? "rgba(102,187,106,0.18)" : flashResult === "neutral" ? "rgba(255,167,38,0.18)" : "rgba(239,83,80,0.18)",
+                border: `1.5px solid ${flashResult === "perfect" ? "#66bb6a55" : flashResult === "neutral" ? "#ffa72655" : "#ef535055"}`,
+                display: "flex", alignItems: "center", gap: 10,
+                animation: "slideUp 0.4s ease",
+              }}>
+                <span style={{ fontSize: 20 }}>{flashResult === "perfect" ? "⭐" : flashResult === "neutral" ? "➡️" : "💔"}</span>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 800, color: flashResult === "perfect" ? "#a5d6a7" : flashResult === "neutral" ? "#ffcc80" : "#ef9a9a", letterSpacing: 1 }}>
+                    {flashResult === "perfect" ? "PERFECTE DAG" : flashResult === "neutral" ? "NEUTRALE DAG" : "SLECHTE DAG"}
+                  </div>
+                  <div style={{ fontSize: 11, color: "rgba(255,255,255,0.45)" }}>
+                    {flashResult === "perfect" ? "XP gewonnen. Streak +1." : flashResult === "neutral" ? "Geen verandering. Streak gebroken." : "XP verloren. Streak gebroken."}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* History */}
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 10, color: "rgba(255,255,255,0.4)", letterSpacing: 2, marginBottom: 8, fontWeight: 700 }}>LAATSTE 30 DAGEN</div>
+              <HistoryTimeline history={state.history} />
+            </div>
+
+            {/* Badges */}
+            {state.badges.length > 0 && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+                {state.badges.map((b, i) => (
+                  <div key={i} style={{
+                    padding: "3px 10px", borderRadius: 20,
+                    border: "1px solid #ffd70055", background: "rgba(255,215,0,0.08)",
+                    fontSize: 10, color: "#ffd700", fontWeight: 700, letterSpacing: 1,
+                  }}>✦ {b}</div>
+                ))}
+              </div>
+            )}
+
+            {/* Nav buttons */}
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => setPage("goals")} style={{
+                flex: 1, padding: "13px", borderRadius: 14,
+                background: "rgba(255,255,255,0.12)", border: "1.5px solid rgba(255,255,255,0.18)",
+                color: "white", fontSize: 13, fontWeight: 800, cursor: "pointer",
+                letterSpacing: 1,
+              }}>
+                📋 DOELEN
+              </button>
+              <button onClick={toggleMusic} style={{
+                padding: "13px 16px", borderRadius: 14,
+                background: musicOn ? "rgba(255,255,255,0.15)" : "transparent",
+                border: `1.5px solid ${musicOn ? "rgba(255,255,255,0.3)" : "rgba(255,255,255,0.1)"}`,
+                color: musicOn ? "white" : "rgba(255,255,255,0.35)", fontSize: 16, cursor: "pointer",
+              }}>{musicOn ? "🔊" : "🔇"}</button>
+              {!showReset ? (
+                <button onClick={() => setShowReset(true)} style={{
+                  padding: "13px 16px", borderRadius: 14,
+                  background: "transparent", border: "1.5px solid rgba(255,255,255,0.1)",
+                  color: "rgba(255,255,255,0.35)", fontSize: 11, cursor: "pointer",
+                }}>↺</button>
+              ) : (
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button onClick={voluntaryReset} style={{
+                    padding: "13px 12px", borderRadius: 14,
+                    background: "rgba(239,83,80,0.2)", border: "1.5px solid #ef535055",
+                    color: "#ef5350", fontSize: 11, cursor: "pointer", fontWeight: 700,
+                  }}>Reset</button>
+                  <button onClick={() => setShowReset(false)} style={{
+                    padding: "13px 12px", borderRadius: 14,
+                    background: "transparent", border: "1.5px solid rgba(255,255,255,0.1)",
+                    color: "rgba(255,255,255,0.4)", fontSize: 11, cursor: "pointer",
+                  }}>✕</button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── PAGE: GOALS ─── */}
+      {page === "goals" && (
+        <div style={{
+          minHeight: "100vh",
+          background: "#0f1117",
+          display: "flex", flexDirection: "column",
+        }}>
+          {/* Header */}
+          <div style={{
+            padding: "18px 20px 0",
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            borderBottom: "1px solid rgba(255,255,255,0.06)",
+            paddingBottom: 16,
+          }}>
+            <button onClick={() => {
+              setPage("world");
+              if (pendingAnimRef.current) {
+                const anim = pendingAnimRef.current;
+                pendingAnimRef.current = null;
+                const dur = anim === "cheer" ? 1800 : anim === "jump" ? 900 : 1200;
+                setTimeout(() => setAvatarAnim(anim), 80);
+                setTimeout(() => setAvatarAnim(null), 80 + dur);
+              }
+            }} style={{
+              background: "rgba(255,255,255,0.07)", border: "1.5px solid rgba(255,255,255,0.1)",
+              borderRadius: 12, padding: "8px 14px",
+              color: "white", fontSize: 13, cursor: "pointer", fontWeight: 700,
+            }}>← Wereld</button>
+            <div style={{ fontSize: 14, fontWeight: 800, color: "white", letterSpacing: 2 }}>DOELEN</div>
+            <button onClick={() => setShowManage(!showManage)} style={{
+              background: showManage ? "rgba(255,255,255,0.14)" : "rgba(255,255,255,0.07)",
+              border: "1.5px solid rgba(255,255,255,0.1)",
+              borderRadius: 12, padding: "8px 14px",
+              color: "white", fontSize: 13, cursor: "pointer", fontWeight: 700,
+            }}>⚙️</button>
+          </div>
+
+          <div style={{ flex: 1, padding: "20px", overflowY: "auto" }}>
+            {/* Date + status */}
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.35)", marginBottom: 16, letterSpacing: 1, fontWeight: 600 }}>
+              {new Date().toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long" }).toUpperCase()}
+              {state.todaySubmitted && <span style={{ marginLeft: 10, color: "#66bb6a", fontSize: 10 }}>✓ INGEDIEND</span>}
+            </div>
+
+            {/* Manage panel */}
+            {showManage && (
+              <div style={{
+                marginBottom: 20, padding: 16, borderRadius: 16,
+                background: "rgba(255,255,255,0.05)", border: "1.5px solid rgba(255,255,255,0.08)",
+                animation: "slideUp 0.3s ease",
+              }}>
+                <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", letterSpacing: 2, marginBottom: 12, fontWeight: 700 }}>DOEL TOEVOEGEN</div>
+                <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+                  <input
+                    value={newCheck}
+                    onChange={e => setNewCheck(e.target.value)}
+                    onKeyDown={e => e.key === "Enter" && addCheck()}
+                    placeholder="Nieuw doel..."
+                    style={{
+                      flex: 1, padding: "10px 14px", borderRadius: 10,
+                      border: "1.5px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.07)",
+                      color: "white", fontSize: 13, outline: "none",
+                    }}
+                  />
+                  <button onClick={addCheck} style={{
+                    padding: "10px 16px", borderRadius: 10,
+                    background: "rgba(102,187,106,0.2)", border: "1.5px solid #66bb6a55",
+                    color: "#a5d6a7", fontSize: 18, cursor: "pointer",
+                  }}>+</button>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {state.checks.map((c, i) => (
+                    <div key={i}
+                      draggable
+                      onDragStart={() => setDragIndex(i)}
+                      onDragOver={e => { e.preventDefault(); setDragOver(i); }}
+                      onDrop={() => {
+                        if (dragIndex === null || dragIndex === i) return;
+                        const newChecks = [...state.checks];
+                        const [moved] = newChecks.splice(dragIndex, 1);
+                        newChecks.splice(i, 0, moved);
+                        setState(prev => ({ ...prev, checks: newChecks }));
+                        setDragIndex(null); setDragOver(null);
+                      }}
+                      onDragEnd={() => { setDragIndex(null); setDragOver(null); }}
+                      style={{
+                        display: "flex", alignItems: "center", justifyContent: "space-between",
+                        padding: "8px 12px", borderRadius: 8,
+                        background: dragOver === i ? "rgba(255,255,255,0.1)" : "rgba(255,255,255,0.04)",
+                        border: `1px solid ${dragOver === i ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.06)"}`,
+                        opacity: dragIndex === i ? 0.4 : 1,
+                        cursor: "grab", transition: "all 0.15s",
+                      }}>
+                      <span style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", marginRight: 8, userSelect: "none" }}>☰</span>
+                      <span style={{ fontSize: 13, color: "rgba(255,255,255,0.7)", flex: 1 }}>{c}</span>
+                      <button onClick={() => removeCheck(i)} style={{
+                        background: "transparent", color: "rgba(255,255,255,0.25)",
+                        fontSize: 16, cursor: "pointer", padding: "0 4px",
+                      }}>×</button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Checklist */}
+            {state.checks.length === 0 ? (
+              <div style={{ textAlign: "center", color: "rgba(255,255,255,0.25)", padding: 40, fontSize: 13 }}>
+                Geen doelen. Voeg er toe via ⚙️
+              </div>
+            ) : (
+              <CheckList checks={state.checks} values={checkValues} onChange={handleCheckChange} submitted={state.todaySubmitted} />
+            )}
+
+            {/* Progress today */}
+            {!state.todaySubmitted && state.checks.length > 0 && (
+              <div style={{ marginTop: 16 }}>
+                {(() => {
+                  const active = checkValues.filter(v => v !== "na").length;
+                  const done = checkValues.filter(v => v === "achieved").length;
+                  const pct = active > 0 ? Math.round(done / active * 100) : 0;
+                  const barColor = pct === 100 ? "#66bb6a" : pct >= 80 ? "#ffa726" : "#ef5350";
+                  return (
+                    <div style={{ marginBottom: 16 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "rgba(255,255,255,0.4)", marginBottom: 6, fontWeight: 600 }}>
+                        <span>VOORTGANG VANDAAG</span>
+                        <span style={{ color: barColor }}>{done}/{active} · {pct}%</span>
+                      </div>
+                      <div style={{ height: 6, borderRadius: 3, background: "rgba(255,255,255,0.08)", overflow: "hidden" }}>
+                        <div style={{ height: "100%", width: `${pct}%`, borderRadius: 3, background: barColor, transition: "width 0.4s ease" }} />
+                      </div>
+                      <div style={{ marginTop: 6, fontSize: 10, color: "rgba(255,255,255,0.25)" }}>
+                        {pct === 100 ? "⭐ Perfecte dag mogelijk!" : pct >= 80 ? "➡️ Neutrale dag (geen XP verandering)" : "⚠️ Slechte dag als je nu indient"}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+
+            {/* Submit */}
+            {!state.todaySubmitted && state.checks.length > 0 && (
+              <button onClick={submitDay} style={{
+                width: "100%", padding: "15px", borderRadius: 16,
+                background: "rgba(255,255,255,0.1)", border: "1.5px solid rgba(255,255,255,0.15)",
+                color: "white", fontSize: 14, fontWeight: 800, cursor: "pointer",
+                letterSpacing: 2, marginTop: 4,
+                transition: "background 0.2s",
+              }}
+                onTouchStart={e => e.currentTarget.style.background = "rgba(255,255,255,0.18)"}
+                onTouchEnd={e => e.currentTarget.style.background = "rgba(255,255,255,0.1)"}
+              >
+                DAG INDIENEN
+              </button>
+            )}
+
+            {state.todaySubmitted && (
+              <div style={{
+                marginTop: 16, padding: "14px", borderRadius: 16, textAlign: "center",
+                background: "rgba(102,187,106,0.1)", border: "1.5px solid rgba(102,187,106,0.2)",
+              }}>
+                <div style={{ fontSize: 13, color: "#a5d6a7", fontWeight: 700 }}>Dag ingediend ✓</div>
+                <div style={{ fontSize: 11, color: "rgba(255,255,255,0.35)", marginTop: 4 }}>Ga terug naar je wereld om je voortgang te zien.</div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
